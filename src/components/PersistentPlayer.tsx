@@ -385,9 +385,17 @@ export default function PersistentPlayer() {
       <div
         className={`fixed overflow-hidden bg-black transition-all ${showVideo
           ? 'border border-border shadow-2xl'
-          : 'absolute left-[-9999px] top-[-9999px] w-1 h-1 pointer-events-none opacity-0'
+          : 'pointer-events-none'
           }`}
-        style={videoStyle}
+        style={showVideo ? videoStyle : {
+          position: 'fixed',
+          bottom: '0px',
+          right: '0px',
+          width: '300px',
+          height: '200px',
+          opacity: 0.001,
+          zIndex: -50,
+        }}
       >
         {/* Transparent Click Blocker Overlay */}
         <div
