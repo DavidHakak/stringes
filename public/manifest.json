@@ -1,0 +1,22 @@
+{
+  "name": "מיתרים - מוזיקה משפחתית",
+  "short_name": "מיתרים",
+  "description": "Family music player with strict whitelisting controls",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}
