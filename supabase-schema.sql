@@ -140,3 +140,48 @@ create policy "Users can manage their own play history"
 create policy "Enable all access to youtube_cache"
   on public.youtube_cache for all
   using (true);
+
+-- Blocked Keywords table (Blacklist)
+create table if not exists public.blocked_keywords (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users on delete cascade not null,
+  keyword text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (user_id, keyword)
+);
+
+-- Blocked Videos table (Blacklist)
+create table if not exists public.blocked_videos (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users on delete cascade not null,
+  video_id text not null,
+  title text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (user_id, video_id)
+);
+
+-- Enable RLS
+alter table public.blocked_keywords enable row level security;
+alter table public.blocked_videos enable row level security;
+
+-- Blocked Keywords Policies
+create policy "Users can view their own blocked keywords"
+  on public.blocked_keywords for select
+  using (auth.uid() = user_id);
+
+create policy "Admins can manage all blocked keywords"
+  on public.blocked_keywords for all
+  using (exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'admin'
+  ));
+
+-- Blocked Videos Policies
+create policy "Users can view their own blocked videos"
+  on public.blocked_videos for select
+  using (auth.uid() = user_id);
+
+create policy "Admins can manage all blocked videos"
+  on public.blocked_videos for all
+  using (exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'admin'
+  ));

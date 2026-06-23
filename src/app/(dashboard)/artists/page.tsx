@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import { db } from '@/db';
-import { allowedChannels } from '@/db/schema';
+import { allowedChannels, blockedKeywords, blockedVideos } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCachedValue, setCachedValue } from '@/utils/cache';
 import { Track } from '@/store/usePlayerStore';
@@ -29,13 +29,24 @@ export default async function ArtistsPage() {
     .from(allowedChannels)
     .where(eq(allowedChannels.userId, user.id));
 
+  // 2. Fetch user's blacklists
+  const blockedWords = await db.select()
+    .from(blockedKeywords)
+    .where(eq(blockedKeywords.userId, user.id));
+  const blockedKeywordsList = blockedWords.map((w) => w.keyword.trim().toLowerCase());
+
+  const blockedVids = await db.select()
+    .from(blockedVideos)
+    .where(eq(blockedVideos.userId, user.id));
+  const blockedVideoIdsSet = new Set(blockedVids.map((v) => v.videoId));
+
   const artists: Artist[] = [];
 
   if (whitelisted.length > 0) {
     const apiKey = process.env.YOUTUBE_API_KEY;
 
     if (apiKey) {
-      // 2. Fetch latest 10 videos for each whitelisted channel
+      // 3. Fetch latest 10 videos for each whitelisted channel
       const fetchPromises = whitelisted.map(async (channel) => {
         const cacheKey = `youtube_channel_artists_feed_v1:${channel.channelId}`;
         let videos = await getCachedValue<Track[]>(cacheKey);
@@ -67,11 +78,18 @@ export default async function ArtistsPage() {
           }
         }
 
+        // Apply blacklist filtering
+        const filteredVideos = (videos || []).filter((track) => {
+          if (blockedVideoIdsSet.has(track.videoId)) return false;
+          const titleLower = (track.title || '').toLowerCase();
+          return !blockedKeywordsList.some((word) => titleLower.includes(word));
+        });
+
         return {
           channelId: channel.channelId,
           channelTitle: channel.channelTitle,
           channelThumbnail: channel.channelThumbnail || '',
-          tracks: videos || [],
+          tracks: filteredVideos,
         };
       });
 

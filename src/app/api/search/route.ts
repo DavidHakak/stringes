@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { db } from '@/db';
-import { allowedChannels } from '@/db/schema';
+import { allowedChannels, blockedKeywords, blockedVideos } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCachedValue, setCachedValue } from '@/utils/cache';
 
@@ -35,7 +35,22 @@ export async function GET(request: Request) {
       return NextResponse.json([]);
     }
 
-    // 2. Fetch raw YouTube search results from cache if available
+    // 2. Fetch user's blacklists (blocked keywords and specific videos)
+    const blockedWords = await db.select({
+      keyword: blockedKeywords.keyword
+    })
+    .from(blockedKeywords)
+    .where(eq(blockedKeywords.userId, user.id));
+    const blockedKeywordsList = blockedWords.map((w) => w.keyword.trim().toLowerCase());
+
+    const blockedVids = await db.select({
+      videoId: blockedVideos.videoId
+    })
+    .from(blockedVideos)
+    .where(eq(blockedVideos.userId, user.id));
+    const blockedVideoIdsSet = new Set(blockedVids.map((v) => v.videoId));
+
+    // 3. Fetch raw YouTube search results from cache if available
     const cacheKey = `youtube_search_raw:${q.trim().toLowerCase()}`;
     let rawVideos = await getCachedValue<any[]>(cacheKey);
 
@@ -68,8 +83,21 @@ export async function GET(request: Request) {
       await setCachedValue(cacheKey, rawVideos);
     }
 
-    // 3. Strict Server-Side Filtering: Keep only videos in the user's whitelist
-    const filteredVideos = (rawVideos || []).filter((video) => allowedChannelIds.has(video.channelId));
+    // 4. Strict Server-Side Filtering: Whitelist + Blacklist check
+    const filteredVideos = (rawVideos || []).filter((video) => {
+      // Must be in whitelisted channels
+      if (!allowedChannelIds.has(video.channelId)) return false;
+
+      // Must not be a blocked video
+      if (blockedVideoIdsSet.has(video.videoId)) return false;
+
+      // Must not contain any blocked keyword in the title
+      const titleLower = (video.title || '').toLowerCase();
+      const hasBlockedWord = blockedKeywordsList.some((word) => titleLower.includes(word));
+      if (hasBlockedWord) return false;
+
+      return true;
+    });
 
     return NextResponse.json(filteredVideos);
   } catch (error: any) {

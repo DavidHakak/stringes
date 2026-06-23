@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import { db } from '@/db';
-import { allowedChannels, playHistory, profiles } from '@/db/schema';
+import { allowedChannels, playHistory, profiles, blockedKeywords, blockedVideos } from '@/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getCachedValue, setCachedValue } from '@/utils/cache';
 import HomeClient from './HomeClient';
@@ -88,8 +88,27 @@ export default async function HomePage() {
         if (feed) recommendedTracks.push(...feed);
       });
 
+      // 4. Fetch blacklist and apply it
+      const blockedWords = await db.select()
+        .from(blockedKeywords)
+        .where(eq(blockedKeywords.userId, user.id));
+      const blockedKeywordsList = blockedWords.map((w) => w.keyword.trim().toLowerCase());
+
+      const blockedVids = await db.select()
+        .from(blockedVideos)
+        .where(eq(blockedVideos.userId, user.id));
+      const blockedVideoIdsSet = new Set(blockedVids.map((v) => v.videoId));
+
+      const filteredRecommended = recommendedTracks.filter((track) => {
+        if (blockedVideoIdsSet.has(track.videoId)) return false;
+        const titleLower = (track.title || '').toLowerCase();
+        return !blockedKeywordsList.some((word) => titleLower.includes(word));
+      });
+
       // Shuffle recommended tracks to give a mixed experience
-      recommendedTracks.sort(() => Math.random() - 0.5);
+      filteredRecommended.sort(() => Math.random() - 0.5);
+      recommendedTracks.length = 0;
+      recommendedTracks.push(...filteredRecommended);
     } else {
       console.error('YOUTUBE_API_KEY is not defined');
     }

@@ -54,3 +54,24 @@ export const playHistory = pgTable('play_history', {
   thumbnail: text('thumbnail'),
   playedAt: timestamp('played_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// Blocked keywords in video titles (Blacklist)
+export const blockedKeywords = pgTable('blocked_keywords', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull(), // Profiles id
+  keyword: text('keyword').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userKeywordUnique: unique('user_keyword_unique').on(t.userId, t.keyword),
+}));
+
+// Blocked specific video IDs (Blacklist)
+export const blockedVideos = pgTable('blocked_videos', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull(), // Profiles id
+  videoId: text('video_id').notNull(),
+  title: text('title').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userVideoUnique: unique('user_video_unique').on(t.userId, t.videoId),
+}));
