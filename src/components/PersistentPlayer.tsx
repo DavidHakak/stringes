@@ -43,6 +43,7 @@ export default function PersistentPlayer() {
   const [isVideoFullScreen, setIsVideoFullScreen] = useState(false);
   const playerRef = useRef<any>(null);
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Playback session limit counter (2 hours)
   const playbackTimer = useRef<number>(0);
@@ -195,10 +196,16 @@ export default function PersistentPlayer() {
       navigator.mediaSession.setActionHandler('play', () => {
         setPlaying(true);
         if (playerRef.current) playerRef.current.playVideo();
+        if (silentAudioRef.current) {
+          silentAudioRef.current.play().catch(() => {});
+        }
       });
       navigator.mediaSession.setActionHandler('pause', () => {
         setPlaying(false);
         if (playerRef.current) playerRef.current.pauseVideo();
+        if (silentAudioRef.current) {
+          silentAudioRef.current.pause();
+        }
       });
       navigator.mediaSession.setActionHandler('previoustrack', () => {
         prevTrack();
@@ -226,7 +233,7 @@ export default function PersistentPlayer() {
         navigator.mediaSession.setActionHandler('seekto', null);
       } catch (e) {}
     };
-  }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress]);
+  }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress, silentAudioRef]);
 
   // Prevent YouTube player from pausing when tab goes background on desktop
   useEffect(() => {
@@ -254,6 +261,18 @@ export default function PersistentPlayer() {
       if (timer) clearTimeout(timer);
     };
   }, [isPlaying, playerReady]);
+
+  // Sync silent audio loop for background execution
+  useEffect(() => {
+    if (!silentAudioRef.current) return;
+    if (isPlaying) {
+      silentAudioRef.current.play().catch((err) => {
+        console.warn('Silent audio play blocked/waiting user gesture:', err);
+      });
+    } else {
+      silentAudioRef.current.pause();
+    }
+  }, [isPlaying]);
 
   // Sync volume state from Zustand to YouTube player
   useEffect(() => {
