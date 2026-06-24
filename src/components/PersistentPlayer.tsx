@@ -197,22 +197,72 @@ export default function PersistentPlayer() {
     try {
       navigator.mediaSession.setActionHandler('play', () => {
         setPlaying(true);
-        if (playerRef.current) playerRef.current.playVideo();
+        if (playerRef.current && typeof playerRef.current.playVideo === 'function') {
+          try {
+            playerRef.current.playVideo();
+          } catch (e) {}
+        }
         if (silentAudioRef.current) {
           silentAudioRef.current.play().catch(() => {});
         }
       });
       navigator.mediaSession.setActionHandler('pause', () => {
         setPlaying(false);
-        if (playerRef.current) playerRef.current.pauseVideo();
+        if (playerRef.current && typeof playerRef.current.pauseVideo === 'function') {
+          try {
+            playerRef.current.pauseVideo();
+          } catch (e) {}
+        }
         if (silentAudioRef.current) {
           silentAudioRef.current.pause();
         }
       });
       navigator.mediaSession.setActionHandler('previoustrack', () => {
+        const store = usePlayerStore.getState();
+        const { queue, currentIndex, progress: storeProgress } = store;
+        if (queue.length === 0) return;
+        
+        if (storeProgress > 3) {
+          if (playerRef.current && typeof playerRef.current.seekTo === 'function') {
+            playerRef.current.seekTo(0, true);
+          }
+          setProgress(0);
+          return;
+        }
+
+        let prevIndex = currentIndex - 1;
+        if (prevIndex < 0) {
+          prevIndex = queue.length - 1;
+        }
+        const prevTrackObj = queue[prevIndex];
+        if (prevTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+          try {
+            playerRef.current.loadVideoById(prevTrackObj.videoId);
+          } catch (e) {
+            console.error('MediaSession prevtrack load error:', e);
+          }
+        }
         prevTrack();
       });
       navigator.mediaSession.setActionHandler('nexttrack', () => {
+        const store = usePlayerStore.getState();
+        const { queue, currentIndex, repeat: storeRepeat } = store;
+        let nextIndex = currentIndex + 1;
+        if (nextIndex >= queue.length) {
+          if (storeRepeat === 'all') {
+            nextIndex = 0;
+          } else {
+            return;
+          }
+        }
+        const nextTrackObj = queue[nextIndex];
+        if (nextTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+          try {
+            playerRef.current.loadVideoById(nextTrackObj.videoId);
+          } catch (e) {
+            console.error('MediaSession nexttrack load error:', e);
+          }
+        }
         nextTrack();
       });
       navigator.mediaSession.setActionHandler('seekto', (details) => {
@@ -237,13 +287,12 @@ export default function PersistentPlayer() {
     };
   }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress, silentAudioRef]);
 
-  // Initialize silent HTML5 Audio element once on mount and unlock it on user gesture
+  // Initialize silent HTML5 Audio element configuration and unlock on user gesture
   useEffect(() => {
-    const silenceSrc = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA";
-    const audio = new Audio(silenceSrc);
-    audio.loop = true;
+    const audio = silentAudioRef.current;
+    if (!audio) return;
+
     audio.volume = 0.01;
-    silentAudioRef.current = audio;
 
     const unlockAudio = () => {
       if (audio) {
@@ -264,8 +313,6 @@ export default function PersistentPlayer() {
     window.addEventListener('touchend', unlockAudio);
 
     return () => {
-      audio.pause();
-      silentAudioRef.current = null;
       window.removeEventListener('click', unlockAudio);
       window.removeEventListener('touchend', unlockAudio);
     };
@@ -411,6 +458,30 @@ export default function PersistentPlayer() {
         event.target.seekTo(0, true);
         event.target.playVideo();
       } else {
+        // Programmatically play the next video to bypass React background render throttling
+        const store = usePlayerStore.getState();
+        const { queue, currentIndex, repeat: storeRepeat } = store;
+        
+        let nextIndex = currentIndex + 1;
+        if (nextIndex >= queue.length) {
+          if (storeRepeat === 'all') {
+            nextIndex = 0;
+          } else {
+            setPlaying(false);
+            setProgress(0);
+            return;
+          }
+        }
+        
+        const nextTrackObj = queue[nextIndex];
+        if (nextTrackObj && event.target && typeof event.target.loadVideoById === 'function') {
+          try {
+            event.target.loadVideoById(nextTrackObj.videoId);
+          } catch (e) {
+            console.error('Failed to load next video programmatically on end:', e);
+          }
+        }
+        
         nextTrack();
       }
     } else if (state === 5 || state === -1) {
@@ -436,9 +507,7 @@ export default function PersistentPlayer() {
   };
 
   const onEnd = () => {
-    if (repeat !== 'one') {
-      nextTrack();
-    }
+    // Handled in onStateChange state === 0 for programmatic loading.
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -486,12 +555,13 @@ export default function PersistentPlayer() {
           }`}
         style={showVideo ? videoStyle : {
           position: 'fixed',
-          bottom: '0px',
-          right: '0px',
-          width: '300px',
-          height: '200px',
-          opacity: 0.001,
-          zIndex: -50,
+          bottom: '1px',
+          left: '1px',
+          width: '1px',
+          height: '1px',
+          opacity: 1,
+          zIndex: 10,
+          pointerEvents: 'none',
         }}
       >
         {/* Transparent Click Blocker Overlay */}
@@ -981,6 +1051,14 @@ export default function PersistentPlayer() {
           </div>
         </div>
       )}
+      {/* Loop silent audio to keep media session alive in background */}
+      <audio
+        ref={silentAudioRef}
+        src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA"
+        loop
+        preload="auto"
+        className="hidden"
+      />
     </>
   );
 }
