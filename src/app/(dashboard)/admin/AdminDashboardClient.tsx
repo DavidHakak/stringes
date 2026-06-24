@@ -93,7 +93,8 @@ export default function AdminDashboardClient({ initialUsers }: { initialUsers: M
     const delayDebounce = setTimeout(async () => {
       setSearchingChannels(true);
       try {
-        const res = await fetch(`/api/youtube/channels?q=${encodeURIComponent(searchQuery)}`);
+        const userIdParam = selectedUser ? `&userId=${selectedUser.id}` : '';
+        const res = await fetch(`/api/youtube/channels?q=${encodeURIComponent(searchQuery)}${userIdParam}`);
         const data = await res.json();
         if (Array.isArray(data)) {
           setSearchResults(data);

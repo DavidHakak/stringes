@@ -43,6 +43,13 @@ export async function GET(request: Request) {
     .where(eq(blockedKeywords.userId, user.id));
     const blockedKeywordsList = blockedWords.map((w) => w.keyword.trim().toLowerCase());
 
+    // Pre-check search query against user's blocked keywords to save YouTube API quota
+    const qLower = q.trim().toLowerCase();
+    const isQueryBlocked = blockedKeywordsList.some((word) => qLower.includes(word));
+    if (isQueryBlocked) {
+      return NextResponse.json([]);
+    }
+
     const blockedVids = await db.select({
       videoId: blockedVideos.videoId
     })

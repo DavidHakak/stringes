@@ -44,6 +44,7 @@ export default function PersistentPlayer() {
   const playerRef = useRef<any>(null);
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const forcePlayCount = useRef<number>(0);
 
   // Playback session limit counter (2 hours)
   const playbackTimer = useRef<number>(0);
@@ -53,6 +54,7 @@ export default function PersistentPlayer() {
   useEffect(() => {
     playbackTimer.current = 0;
     setShowTimeoutModal(false);
+    forcePlayCount.current = 0; // Reset force play attempts count
   }, [currentTrack?.videoId]);
 
   // Refs for video positioning slots
@@ -235,6 +237,38 @@ export default function PersistentPlayer() {
     };
   }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress, silentAudioRef]);
 
+  // Initialize programmatic silent audio element with gesture listeners
+  useEffect(() => {
+    const silenceSrc = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA";
+    const audio = new Audio(silenceSrc);
+    audio.loop = true;
+    audio.volume = 0.01;
+    silentAudioRef.current = audio;
+
+    const handleUserGesture = () => {
+      if (audio && isPlaying) {
+        audio.play()
+          .then(() => {
+            window.removeEventListener('click', handleUserGesture);
+            window.removeEventListener('touchend', handleUserGesture);
+          })
+          .catch((err) => console.log('Silent audio gesture play failed:', err));
+      }
+    };
+
+    if (isPlaying) {
+      window.addEventListener('click', handleUserGesture);
+      window.addEventListener('touchend', handleUserGesture);
+    }
+
+    return () => {
+      audio.pause();
+      silentAudioRef.current = null;
+      window.removeEventListener('click', handleUserGesture);
+      window.removeEventListener('touchend', handleUserGesture);
+    };
+  }, [isPlaying]);
+
   // Prevent YouTube player from pausing when tab goes background on desktop
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -344,8 +378,28 @@ export default function PersistentPlayer() {
     if (state === 1) {
       setPlaying(true);
       setDuration(event.target.getDuration());
+      forcePlayCount.current = 0; // Reset count on successful play
     } else if (state === 2) {
-      setPlaying(false);
+      // If paused, check if user requested playing and tab is hidden (browser-induced pause)
+      if (document.hidden && usePlayerStore.getState().isPlaying) {
+        if (forcePlayCount.current < 5) {
+          forcePlayCount.current += 1;
+          setTimeout(() => {
+            try {
+              if (event.target && typeof event.target.playVideo === 'function') {
+                event.target.playVideo();
+              }
+            } catch (e) {
+              console.error('Failed to force play in background:', e);
+            }
+          }, 100);
+        } else {
+          console.warn('Failed to force play after 5 attempts, stopping background playback.');
+          setPlaying(false);
+        }
+      } else {
+        setPlaying(false);
+      }
     } else if (state === 0) {
       // Song ended
       if (repeat === 'one') {
@@ -353,6 +407,25 @@ export default function PersistentPlayer() {
         event.target.playVideo();
       } else {
         nextTrack();
+      }
+    } else if (state === 5 || state === -1) {
+      // Cued or unstarted: if we are supposed to be playing (e.g. background sequential transition), force play!
+      if (usePlayerStore.getState().isPlaying) {
+        if (forcePlayCount.current < 5) {
+          forcePlayCount.current += 1;
+          setTimeout(() => {
+            try {
+              if (event.target && typeof event.target.playVideo === 'function') {
+                event.target.playVideo();
+              }
+            } catch (e) {
+              console.error('Failed to force play in background:', e);
+            }
+          }, 100);
+        } else {
+          console.warn('Failed to force play after 5 attempts, stopping background playback.');
+          setPlaying(false);
+        }
       }
     }
   };

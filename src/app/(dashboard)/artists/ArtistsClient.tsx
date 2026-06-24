@@ -3,6 +3,7 @@
 import { usePlayerStore, Track } from '@/store/usePlayerStore';
 import { Play, Music, Users, Plus, X, Loader2, FolderHeart, Check } from 'lucide-react';
 import { useState } from 'react';
+import Link from 'next/link';
 
 interface Artist {
   channelId: string;
@@ -212,6 +213,18 @@ export default function ArtistsClient({ artists }: ArtistsClientProps) {
                       </div>
                     );
                   })}
+
+                  {/* All Songs Link Card */}
+                  <Link
+                    href={`/artists/${artist.channelId}`}
+                    className="w-64 bg-gradient-to-br from-primary/20 to-violet-600/10 border border-primary/20 hover:border-primary/40 rounded-2xl p-6 flex flex-col items-center justify-center text-center hover:shadow-xl transition-all duration-300 group flex-shrink-0 cursor-pointer"
+                  >
+                    <div className="p-4 bg-primary/10 rounded-full text-primary group-hover:scale-110 transition-transform mb-3">
+                      <Music className="h-6 w-6" />
+                    </div>
+                    <span className="font-bold text-sm text-foreground">כל השירים</span>
+                    <span className="text-xs text-muted-foreground mt-1">של {artist.channelTitle}</span>
+                  </Link>
                 </div>
               ) : (
                 <div className="py-8 text-center text-xs text-muted-foreground bg-secondary/10 rounded-xl border border-dashed border-border/60">

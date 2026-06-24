@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { getCachedValue, setCachedValue } from '@/utils/cache';
+import { db } from '@/db';
+import { blockedKeywords } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 
 export async function GET(request: Request) {
   try {
@@ -13,8 +16,24 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const q = searchParams.get('q');
+    const targetUserId = searchParams.get('userId');
 
     if (!q || q.trim() === '') {
+      return NextResponse.json([]);
+    }
+
+    // Pre-check if search query contains any blocked keywords for this user profile to save YouTube API tokens
+    const userIdToCheck = targetUserId || user.id;
+    const blockedWords = await db.select({
+      keyword: blockedKeywords.keyword
+    })
+    .from(blockedKeywords)
+    .where(eq(blockedKeywords.userId, userIdToCheck));
+
+    const blockedKeywordsList = blockedWords.map((w) => w.keyword.trim().toLowerCase());
+    const qLower = q.trim().toLowerCase();
+    const isQueryBlocked = blockedKeywordsList.some((word) => qLower.includes(word));
+    if (isQueryBlocked) {
       return NextResponse.json([]);
     }
 
