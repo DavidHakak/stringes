@@ -237,7 +237,7 @@ export default function PersistentPlayer() {
     };
   }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress, silentAudioRef]);
 
-  // Initialize programmatic silent audio element with gesture listeners
+  // Initialize silent HTML5 Audio element once on mount and unlock it on user gesture
   useEffect(() => {
     const silenceSrc = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA";
     const audio = new Audio(silenceSrc);
@@ -245,29 +245,31 @@ export default function PersistentPlayer() {
     audio.volume = 0.01;
     silentAudioRef.current = audio;
 
-    const handleUserGesture = () => {
-      if (audio && isPlaying) {
+    const unlockAudio = () => {
+      if (audio) {
         audio.play()
           .then(() => {
-            window.removeEventListener('click', handleUserGesture);
-            window.removeEventListener('touchend', handleUserGesture);
+            // Unlocked successfully. Pause if the user is not actively playing.
+            if (!usePlayerStore.getState().isPlaying) {
+              audio.pause();
+            }
+            window.removeEventListener('click', unlockAudio);
+            window.removeEventListener('touchend', unlockAudio);
           })
-          .catch((err) => console.log('Silent audio gesture play failed:', err));
+          .catch((err) => console.warn('Silent audio context unlock failed:', err));
       }
     };
 
-    if (isPlaying) {
-      window.addEventListener('click', handleUserGesture);
-      window.addEventListener('touchend', handleUserGesture);
-    }
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchend', unlockAudio);
 
     return () => {
       audio.pause();
       silentAudioRef.current = null;
-      window.removeEventListener('click', handleUserGesture);
-      window.removeEventListener('touchend', handleUserGesture);
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchend', unlockAudio);
     };
-  }, [isPlaying]);
+  }, []);
 
   // Prevent YouTube player from pausing when tab goes background on desktop
   useEffect(() => {
@@ -296,15 +298,18 @@ export default function PersistentPlayer() {
     };
   }, [isPlaying, playerReady]);
 
-  // Sync silent audio loop for background execution
+  // Sync silent audio playback with the global playing state
   useEffect(() => {
-    if (!silentAudioRef.current) return;
+    const audio = silentAudioRef.current;
+    if (!audio) return;
+
     if (isPlaying) {
-      silentAudioRef.current.play().catch((err) => {
-        console.warn('Silent audio play blocked/waiting user gesture:', err);
+      audio.play().catch((err) => {
+        // Safe to warn since it will be unlocked on gesture
+        console.warn('Silent audio play waiting gesture unlock:', err);
       });
     } else {
-      silentAudioRef.current.pause();
+      audio.pause();
     }
   }, [isPlaying]);
 
@@ -409,8 +414,8 @@ export default function PersistentPlayer() {
         nextTrack();
       }
     } else if (state === 5 || state === -1) {
-      // Cued or unstarted: if we are supposed to be playing (e.g. background sequential transition), force play!
-      if (usePlayerStore.getState().isPlaying) {
+      // Cued or unstarted: if we are supposed to be playing and tab is hidden (background transition), force play!
+      if (document.hidden && usePlayerStore.getState().isPlaying) {
         if (forcePlayCount.current < 5) {
           forcePlayCount.current += 1;
           setTimeout(() => {
