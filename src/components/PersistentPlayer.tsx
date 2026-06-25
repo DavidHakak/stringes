@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import YouTube from 'react-youtube';
 import { usePlayerStore } from '@/store/usePlayerStore';
 import { createClient } from '@/utils/supabase/client';
@@ -510,6 +510,101 @@ export default function PersistentPlayer() {
     // Handled in onStateChange state === 0 for programmatic loading.
   };
 
+  const handlePrevTrack = useCallback(() => {
+    const store = usePlayerStore.getState();
+    const { queue, currentIndex, progress: currentProgress } = store;
+    if (queue.length === 0) return;
+
+    if (currentProgress > 3) {
+      if (playerRef.current && typeof playerRef.current.seekTo === 'function') {
+        try {
+          playerRef.current.seekTo(0, true);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      setProgress(0);
+      prevTrack();
+    } else {
+      let prevIndex = currentIndex - 1;
+      if (prevIndex < 0) {
+        prevIndex = queue.length - 1;
+      }
+      const prevTrackObj = queue[prevIndex];
+      if (prevTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+        try {
+          playerRef.current.loadVideoById(prevTrackObj.videoId);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      prevTrack();
+    }
+  }, [prevTrack, setProgress]);
+
+  const handleNextTrack = useCallback(() => {
+    const store = usePlayerStore.getState();
+    const { queue, currentIndex, repeat: storeRepeat, currentTrack: storeTrack } = store;
+    if (queue.length === 0) return;
+
+    if (storeRepeat === 'one' && storeTrack) {
+      if (playerRef.current && typeof playerRef.current.seekTo === 'function') {
+        try {
+          playerRef.current.seekTo(0, true);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      setProgress(0);
+      nextTrack();
+    } else {
+      let nextIndex = currentIndex + 1;
+      if (nextIndex >= queue.length) {
+        if (storeRepeat === 'all') {
+          nextIndex = 0;
+        } else {
+          nextTrack();
+          return;
+        }
+      }
+      const nextTrackObj = queue[nextIndex];
+      if (nextTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+        try {
+          playerRef.current.loadVideoById(nextTrackObj.videoId);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      nextTrack();
+    }
+  }, [nextTrack, setProgress]);
+
+  // Listen for keyboard arrow keys for navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+         activeEl.tagName === 'TEXTAREA' ||
+         activeEl.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNextTrack();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handlePrevTrack();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleNextTrack, handlePrevTrack]);
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(e.target.value);
     setProgress(value);
@@ -614,13 +709,13 @@ export default function PersistentPlayer() {
                 </span>
 
                 <div className="flex items-center gap-6">
-                  <button onClick={prevTrack} className="text-white hover:text-primary transition-colors p-1" title="שיר הקודם">
+                  <button onClick={handlePrevTrack} className="text-white hover:text-primary transition-colors p-1" title="שיר הקודם">
                     <SkipBack className="h-5 w-5 rotate-180" />
                   </button>
                   <button onClick={togglePlay} className="p-3 bg-primary text-primary-foreground rounded-full hover:scale-105 transition-transform shadow-md">
                     {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-current" />}
                   </button>
-                  <button onClick={nextTrack} className="text-white hover:text-primary transition-colors p-1" title="שיר הבא">
+                  <button onClick={handleNextTrack} className="text-white hover:text-primary transition-colors p-1" title="שיר הבא">
                     <SkipForward className="h-5 w-5 rotate-180" />
                   </button>
                 </div>
@@ -739,7 +834,7 @@ export default function PersistentPlayer() {
                     <Shuffle className="h-5 w-5" />
                   </button>
                   <button
-                    onClick={prevTrack}
+                    onClick={handlePrevTrack}
                     className="p-3 bg-secondary/50 hover:bg-secondary text-foreground rounded-full transition-all"
                   >
                     <SkipBack className="h-6 w-6 rotate-180" />
@@ -751,7 +846,7 @@ export default function PersistentPlayer() {
                     {isPlaying ? <Pause className="h-7 w-7" /> : <Play className="h-7 w-7 fill-current" />}
                   </button>
                   <button
-                    onClick={nextTrack}
+                    onClick={handleNextTrack}
                     className="p-3 bg-secondary/50 hover:bg-secondary text-foreground rounded-full transition-all"
                   >
                     <SkipForward className="h-6 w-6 rotate-180" />
@@ -775,6 +870,7 @@ export default function PersistentPlayer() {
                     max={100}
                     value={muted ? 0 : volume}
                     onChange={handleVolumeChange}
+                    dir="ltr"
                     className="w-full h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                   />
                 </div>
@@ -856,7 +952,7 @@ export default function PersistentPlayer() {
                       <Shuffle className="h-5 w-5" />
                     </button>
                     <button
-                      onClick={prevTrack}
+                      onClick={handlePrevTrack}
                       className="p-3 hover:bg-secondary/80 text-foreground rounded-full transition-all"
                       title="שיר הקודם"
                     >
@@ -869,7 +965,7 @@ export default function PersistentPlayer() {
                       {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 fill-current" />}
                     </button>
                     <button
-                      onClick={nextTrack}
+                      onClick={handleNextTrack}
                       className="p-3 hover:bg-secondary/80 text-foreground rounded-full transition-all"
                       title="שיר הבא"
                     >
@@ -895,6 +991,7 @@ export default function PersistentPlayer() {
                       max={100}
                       value={muted ? 0 : volume}
                       onChange={handleVolumeChange}
+                      dir="ltr"
                       className="w-full h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                     />
                   </div>
@@ -946,7 +1043,7 @@ export default function PersistentPlayer() {
                   <Shuffle className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={prevTrack}
+                  onClick={handlePrevTrack}
                   className="text-muted-foreground hover:text-foreground transition-colors"
                   title="שיר הקודם"
                 >
@@ -959,7 +1056,7 @@ export default function PersistentPlayer() {
                   {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-current" />}
                 </button>
                 <button
-                  onClick={nextTrack}
+                  onClick={handleNextTrack}
                   className="text-muted-foreground hover:text-foreground transition-colors"
                   title="שיר הבא"
                 >
@@ -1000,7 +1097,7 @@ export default function PersistentPlayer() {
                   {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
                 </button>
                 <button
-                  onClick={nextTrack}
+                  onClick={handleNextTrack}
                   className="p-2 text-foreground hover:text-primary transition-colors"
                 >
                   <SkipForward className="h-6 w-6 rotate-180" />
@@ -1021,6 +1118,7 @@ export default function PersistentPlayer() {
                   max={100}
                   value={muted ? 0 : volume}
                   onChange={handleVolumeChange}
+                  dir="ltr"
                   className="w-20 h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                 />
               </div>
