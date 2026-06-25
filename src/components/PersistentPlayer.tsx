@@ -10,6 +10,28 @@ import {
   Loader2, Maximize2, Minimize2
 } from 'lucide-react';
 
+const getSlidingWindow = (queue: any[], currentIndex: number) => {
+  if (queue.length === 0) return { playlistIds: [], playlistIndex: 0 };
+  
+  if (queue.length <= 100) {
+    return {
+      playlistIds: queue.map(t => t.videoId),
+      playlistIndex: currentIndex
+    };
+  }
+
+  // Sliding window for very large queues
+  const WINDOW_BEFORE = 15;
+  const WINDOW_AFTER = 85;
+  const start = Math.max(0, currentIndex - WINDOW_BEFORE);
+  const end = Math.min(queue.length, currentIndex + WINDOW_AFTER + 1);
+  const slicedQueue = queue.slice(start, end);
+  const playlistIds = slicedQueue.map(track => track.videoId);
+  const playlistIndex = currentIndex - start;
+
+  return { playlistIds, playlistIndex };
+};
+
 export default function PersistentPlayer() {
   const supabase = createClient();
 
@@ -45,6 +67,7 @@ export default function PersistentPlayer() {
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const forcePlayCount = useRef<number>(0);
+  const lastSyncQueueRef = useRef<string[]>([]);
 
   // Playback session limit counter (2 hours)
   const playbackTimer = useRef<number>(0);
@@ -147,7 +170,74 @@ export default function PersistentPlayer() {
     } catch (e) {
       console.error('Error controlling player: ', e);
     }
-  }, [isPlaying, playerReady, currentTrack?.videoId]);
+  }, [isPlaying, playerReady]);
+
+  // Sync Zustand queue/playlist state to YouTube Player
+  useEffect(() => {
+    if (!playerRef.current || !playerReady) return;
+
+    const player = playerRef.current;
+    const { playlistIds, playlistIndex } = getSlidingWindow(queue, currentIndex);
+    if (playlistIds.length === 0) return;
+
+    // Compare queue IDs with the last synchronized queue IDs
+    const queueIdsChanged = 
+      lastSyncQueueRef.current.length !== playlistIds.length ||
+      !lastSyncQueueRef.current.every((id, idx) => id === playlistIds[idx]);
+
+    const performSync = () => {
+      try {
+        const currentPlaylist = player.getPlaylist() || [];
+        const currentPlayerIndex = player.getPlaylistIndex();
+
+        const isPlaylistSync =
+          currentPlaylist.length === playlistIds.length &&
+          currentPlaylist.every((id: string, idx: number) => id === playlistIds[idx]);
+
+        const isIndexSync = currentPlayerIndex === playlistIndex;
+
+        if (!isPlaylistSync) {
+          // Playlist contents changed: update it
+          const currentTime = isPlaying ? player.getCurrentTime() : 0;
+          if (isPlaying) {
+            player.loadPlaylist(playlistIds, playlistIndex, currentTime);
+          } else {
+            player.cuePlaylist(playlistIds, playlistIndex, currentTime);
+          }
+          lastSyncQueueRef.current = playlistIds;
+        } else if (!isIndexSync && playlistIndex >= 0) {
+          // Playlist matches, only track index changed (manual user navigation)
+          player.playVideoAt(playlistIndex);
+          if (!isPlaying) {
+            player.pauseVideo();
+          }
+        }
+      } catch (e) {
+        console.error('Error in playlist/index sync:', e);
+      }
+    };
+
+    const isInitialLoad = lastSyncQueueRef.current.length === 0;
+
+    if (queueIdsChanged && !isInitialLoad) {
+      // Queue content changed (addition, deletion, shuffle): use 400ms debounce
+      const timer = setTimeout(() => {
+        performSync();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      // Initial load or only index changed: perform sync immediately
+      performSync();
+    }
+  }, [queue, currentIndex, playerReady]);
+
+  // Sync repeat/loop setting to player
+  useEffect(() => {
+    if (!playerRef.current || !playerReady) return;
+    try {
+      playerRef.current.setLoop(repeat === 'all');
+    } catch (e) {}
+  }, [repeat, playerReady]);
 
   // Track play history inside Supabase when a song starts playing
   useEffect(() => {
@@ -219,7 +309,7 @@ export default function PersistentPlayer() {
       });
       navigator.mediaSession.setActionHandler('previoustrack', () => {
         const store = usePlayerStore.getState();
-        const { queue, currentIndex, progress: storeProgress } = store;
+        const { queue, progress: storeProgress } = store;
         if (queue.length === 0) return;
         
         if (storeProgress > 3) {
@@ -230,40 +320,26 @@ export default function PersistentPlayer() {
           return;
         }
 
-        let prevIndex = currentIndex - 1;
-        if (prevIndex < 0) {
-          prevIndex = queue.length - 1;
-        }
-        const prevTrackObj = queue[prevIndex];
-        if (prevTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+        if (playerRef.current && typeof playerRef.current.previousVideo === 'function') {
           try {
-            playerRef.current.loadVideoById(prevTrackObj.videoId);
+            playerRef.current.previousVideo();
           } catch (e) {
-            console.error('MediaSession prevtrack load error:', e);
+            console.error('MediaSession prevtrack error:', e);
           }
         }
-        prevTrack();
       });
       navigator.mediaSession.setActionHandler('nexttrack', () => {
         const store = usePlayerStore.getState();
-        const { queue, currentIndex, repeat: storeRepeat } = store;
-        let nextIndex = currentIndex + 1;
-        if (nextIndex >= queue.length) {
-          if (storeRepeat === 'all') {
-            nextIndex = 0;
-          } else {
-            return;
-          }
-        }
-        const nextTrackObj = queue[nextIndex];
-        if (nextTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+        const { queue } = store;
+        if (queue.length === 0) return;
+
+        if (playerRef.current && typeof playerRef.current.nextVideo === 'function') {
           try {
-            playerRef.current.loadVideoById(nextTrackObj.videoId);
+            playerRef.current.nextVideo();
           } catch (e) {
-            console.error('MediaSession nexttrack load error:', e);
+            console.error('MediaSession nexttrack error:', e);
           }
         }
-        nextTrack();
       });
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (details.seekTime !== undefined && playerRef.current) {
@@ -285,7 +361,7 @@ export default function PersistentPlayer() {
         navigator.mediaSession.setActionHandler('seekto', null);
       } catch (e) {}
     };
-  }, [playerReady, prevTrack, nextTrack, setPlaying, setProgress, silentAudioRef]);
+  }, [playerReady, setPlaying, setProgress, silentAudioRef]);
 
   // Initialize silent HTML5 Audio element configuration and unlock on user gesture
   useEffect(() => {
@@ -408,111 +484,9 @@ export default function PersistentPlayer() {
     };
   }, [isPlaying, playerReady, setProgress]);
 
-  if (!currentTrack) return null;
-
-  // YouTube Player Event Handlers
-  const onReady = (event: any) => {
-    playerRef.current = event.target;
-    setPlayerReady(true);
-
-    // Set initial configuration
-    event.target.setVolume(muted ? 0 : volume);
-    setDuration(event.target.getDuration());
-
-    if (isPlaying) {
-      event.target.playVideo();
-    }
-  };
-
-  const onStateChange = (event: any) => {
-    // states: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (video cued)
-    const state = event.data;
-    if (state === 1) {
-      setPlaying(true);
-      setDuration(event.target.getDuration());
-      forcePlayCount.current = 0; // Reset count on successful play
-    } else if (state === 2) {
-      // If paused, check if user requested playing and tab is hidden (browser-induced pause)
-      if (document.hidden && usePlayerStore.getState().isPlaying) {
-        if (forcePlayCount.current < 5) {
-          forcePlayCount.current += 1;
-          setTimeout(() => {
-            try {
-              if (event.target && typeof event.target.playVideo === 'function') {
-                event.target.playVideo();
-              }
-            } catch (e) {
-              console.error('Failed to force play in background:', e);
-            }
-          }, 100);
-        } else {
-          console.warn('Failed to force play after 5 attempts, stopping background playback.');
-          setPlaying(false);
-        }
-      } else {
-        setPlaying(false);
-      }
-    } else if (state === 0) {
-      // Song ended
-      if (repeat === 'one') {
-        event.target.seekTo(0, true);
-        event.target.playVideo();
-      } else {
-        // Programmatically play the next video to bypass React background render throttling
-        const store = usePlayerStore.getState();
-        const { queue, currentIndex, repeat: storeRepeat } = store;
-        
-        let nextIndex = currentIndex + 1;
-        if (nextIndex >= queue.length) {
-          if (storeRepeat === 'all') {
-            nextIndex = 0;
-          } else {
-            setPlaying(false);
-            setProgress(0);
-            return;
-          }
-        }
-        
-        const nextTrackObj = queue[nextIndex];
-        if (nextTrackObj && event.target && typeof event.target.loadVideoById === 'function') {
-          try {
-            event.target.loadVideoById(nextTrackObj.videoId);
-          } catch (e) {
-            console.error('Failed to load next video programmatically on end:', e);
-          }
-        }
-        
-        nextTrack();
-      }
-    } else if (state === 5 || state === -1) {
-      // Cued or unstarted: if we are supposed to be playing and tab is hidden (background transition), force play!
-      if (document.hidden && usePlayerStore.getState().isPlaying) {
-        if (forcePlayCount.current < 5) {
-          forcePlayCount.current += 1;
-          setTimeout(() => {
-            try {
-              if (event.target && typeof event.target.playVideo === 'function') {
-                event.target.playVideo();
-              }
-            } catch (e) {
-              console.error('Failed to force play in background:', e);
-            }
-          }, 100);
-        } else {
-          console.warn('Failed to force play after 5 attempts, stopping background playback.');
-          setPlaying(false);
-        }
-      }
-    }
-  };
-
-  const onEnd = () => {
-    // Handled in onStateChange state === 0 for programmatic loading.
-  };
-
   const handlePrevTrack = useCallback(() => {
     const store = usePlayerStore.getState();
-    const { queue, currentIndex, progress: currentProgress } = store;
+    const { queue, progress: currentProgress } = store;
     if (queue.length === 0) return;
 
     if (currentProgress > 3) {
@@ -524,60 +498,18 @@ export default function PersistentPlayer() {
         }
       }
       setProgress(0);
-      prevTrack();
     } else {
-      let prevIndex = currentIndex - 1;
-      if (prevIndex < 0) {
-        prevIndex = queue.length - 1;
-      }
-      const prevTrackObj = queue[prevIndex];
-      if (prevTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-        try {
-          playerRef.current.loadVideoById(prevTrackObj.videoId);
-        } catch (e) {
-          console.error(e);
-        }
-      }
       prevTrack();
     }
   }, [prevTrack, setProgress]);
 
   const handleNextTrack = useCallback(() => {
     const store = usePlayerStore.getState();
-    const { queue, currentIndex, repeat: storeRepeat, currentTrack: storeTrack } = store;
+    const { queue } = store;
     if (queue.length === 0) return;
 
-    if (storeRepeat === 'one' && storeTrack) {
-      if (playerRef.current && typeof playerRef.current.seekTo === 'function') {
-        try {
-          playerRef.current.seekTo(0, true);
-        } catch (e) {
-          console.error(e);
-        }
-      }
-      setProgress(0);
-      nextTrack();
-    } else {
-      let nextIndex = currentIndex + 1;
-      if (nextIndex >= queue.length) {
-        if (storeRepeat === 'all') {
-          nextIndex = 0;
-        } else {
-          nextTrack();
-          return;
-        }
-      }
-      const nextTrackObj = queue[nextIndex];
-      if (nextTrackObj && playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-        try {
-          playerRef.current.loadVideoById(nextTrackObj.videoId);
-        } catch (e) {
-          console.error(e);
-        }
-      }
-      nextTrack();
-    }
-  }, [nextTrack, setProgress]);
+    nextTrack();
+  }, [nextTrack]);
 
   // Listen for keyboard arrow keys for navigation
   useEffect(() => {
@@ -604,6 +536,112 @@ export default function PersistentPlayer() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleNextTrack, handlePrevTrack]);
+
+  if (!currentTrack) return null;
+
+  // YouTube Player Event Handlers
+  const onReady = (event: any) => {
+    playerRef.current = event.target;
+    setPlayerReady(true);
+
+    // Set initial configuration
+    event.target.setVolume(muted ? 0 : volume);
+    setDuration(event.target.getDuration());
+
+    if (isPlaying) {
+      event.target.playVideo();
+    }
+  };
+
+  const onStateChange = (event: any) => {
+    // states: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (video cued)
+    const state = event.data;
+    const player = event.target;
+
+    if (state === 1) {
+      setPlaying(true);
+      setDuration(player.getDuration());
+      forcePlayCount.current = 0; // Reset count on successful play
+
+      // Sync active track back to Zustand if it changed natively
+      try {
+        const videoData = player.getVideoData();
+        const activeVideoId = videoData?.video_id;
+        const store = usePlayerStore.getState();
+
+        if (activeVideoId && store.currentTrack?.videoId !== activeVideoId) {
+          const foundIndex = store.queue.findIndex((t) => t.videoId === activeVideoId);
+          if (foundIndex !== -1) {
+            usePlayerStore.setState({
+              currentIndex: foundIndex,
+              currentTrack: store.queue[foundIndex],
+              progress: 0,
+              isPlaying: true
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Error syncing native track change:', e);
+      }
+    } else if (state === 2) {
+      // If paused, check if user requested playing and tab is hidden (browser-induced pause)
+      if (document.hidden && usePlayerStore.getState().isPlaying) {
+        if (forcePlayCount.current < 5) {
+          forcePlayCount.current += 1;
+          setTimeout(() => {
+            try {
+              if (player && typeof player.playVideo === 'function') {
+                player.playVideo();
+              }
+            } catch (e) {
+              console.error('Failed to force play in background:', e);
+            }
+          }, 100);
+        } else {
+          console.warn('Failed to force play after 5 attempts, stopping background playback.');
+          setPlaying(false);
+        }
+      } else {
+        setPlaying(false);
+      }
+    } else if (state === 0) {
+      // Song ended
+      const store = usePlayerStore.getState();
+      if (store.repeat === 'one') {
+        player.seekTo(0, true);
+        player.playVideo();
+      } else {
+        // If it's the last track in the queue, and we're not repeating, set playing to false
+        if (store.currentIndex === store.queue.length - 1 && store.repeat === 'none') {
+          setPlaying(false);
+          setProgress(0);
+        }
+      }
+    } else if (state === 5 || state === -1) {
+      // Cued or unstarted: if we are supposed to be playing and tab is hidden (background transition), force play!
+      if (document.hidden && usePlayerStore.getState().isPlaying) {
+        if (forcePlayCount.current < 5) {
+          forcePlayCount.current += 1;
+          setTimeout(() => {
+            try {
+              if (player && typeof player.playVideo === 'function') {
+                player.playVideo();
+              }
+            } catch (e) {
+              console.error('Failed to force play in background:', e);
+            }
+          }, 100);
+        } else {
+          console.warn('Failed to force play after 5 attempts, stopping background playback.');
+          setPlaying(false);
+        }
+      }
+    }
+  };
+
+  const onEnd = () => {
+    // Handled in onStateChange state === 0 for native playlist transition.
+  };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(e.target.value);
@@ -732,7 +770,6 @@ export default function PersistentPlayer() {
         </div>
 
         <YouTube
-          videoId={currentTrack.videoId}
           opts={{
             height: '100%',
             width: '100%',
