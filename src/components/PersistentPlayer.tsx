@@ -68,6 +68,16 @@ export default function PersistentPlayer() {
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const forcePlayCount = useRef<number>(0);
   const lastSyncQueueRef = useRef<string[]>([]);
+  const lastSyncIndexRef = useRef<number>(-1);
+
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setIsMobileDevice(mobile);
+    }
+  }, []);
 
   // Playback session limit counter (2 hours)
   const playbackTimer = useRef<number>(0);
@@ -174,7 +184,7 @@ export default function PersistentPlayer() {
 
   // Sync Zustand queue/playlist state to YouTube Player
   useEffect(() => {
-    if (!playerRef.current || !playerReady) return;
+    if (!playerRef.current || !playerReady || !isMobileDevice) return;
 
     const player = playerRef.current;
     const { playlistIds, playlistIndex } = getSlidingWindow(queue, currentIndex);
@@ -187,14 +197,11 @@ export default function PersistentPlayer() {
 
     const performSync = () => {
       try {
-        const currentPlaylist = player.getPlaylist() || [];
-        const currentPlayerIndex = player.getPlaylistIndex();
-
         const isPlaylistSync =
-          currentPlaylist.length === playlistIds.length &&
-          currentPlaylist.every((id: string, idx: number) => id === playlistIds[idx]);
+          lastSyncQueueRef.current.length === playlistIds.length &&
+          lastSyncQueueRef.current.every((id, idx) => id === playlistIds[idx]);
 
-        const isIndexSync = currentPlayerIndex === playlistIndex;
+        const isIndexSync = lastSyncIndexRef.current === playlistIndex;
 
         if (!isPlaylistSync) {
           // Playlist contents changed: update it
@@ -205,12 +212,14 @@ export default function PersistentPlayer() {
             player.cuePlaylist(playlistIds, playlistIndex, currentTime);
           }
           lastSyncQueueRef.current = playlistIds;
+          lastSyncIndexRef.current = playlistIndex;
         } else if (!isIndexSync && playlistIndex >= 0) {
           // Playlist matches, only track index changed (manual user navigation)
           player.playVideoAt(playlistIndex);
           if (!isPlaying) {
             player.pauseVideo();
           }
+          lastSyncIndexRef.current = playlistIndex;
         }
       } catch (e) {
         console.error('Error in playlist/index sync:', e);
@@ -229,7 +238,34 @@ export default function PersistentPlayer() {
       // Initial load or only index changed: perform sync immediately
       performSync();
     }
-  }, [queue, currentIndex, playerReady]);
+  }, [queue, currentIndex, playerReady, isMobileDevice]);
+
+  // Desktop: Sync currentTrack change from Zustand to YouTube Player
+  useEffect(() => {
+    if (!playerRef.current || !playerReady || isMobileDevice || !currentTrack?.videoId) return;
+
+    const player = playerRef.current;
+    try {
+      const videoData = player.getVideoData();
+      const playerVideoId = videoData?.video_id;
+
+      if (playerVideoId !== currentTrack.videoId) {
+        if (isPlaying) {
+          player.loadVideoById({
+            videoId: currentTrack.videoId,
+            startSeconds: 0
+          });
+        } else {
+          player.cueVideoById({
+            videoId: currentTrack.videoId,
+            startSeconds: 0
+          });
+        }
+      }
+    } catch (e) {
+      console.error('Error loading video on desktop:', e);
+    }
+  }, [currentTrack?.videoId, playerReady, isMobileDevice, isPlaying]);
 
   // Sync repeat/loop setting to player
   useEffect(() => {
@@ -399,8 +435,10 @@ export default function PersistentPlayer() {
     let timer: NodeJS.Timeout;
 
     const handleVisibilityChange = () => {
+      if (!playerRef.current || !playerReady) return;
+
       // If the tab is hidden but the state says we should be playing
-      if (document.hidden && isPlaying && playerRef.current && playerReady) {
+      if (document.hidden && isPlaying) {
         // Wait a brief moment for browser's default pause event to finish, then force play
         timer = setTimeout(() => {
           try {
@@ -411,6 +449,15 @@ export default function PersistentPlayer() {
             console.error('Failed to force resume background playback:', e);
           }
         }, 200);
+      } else if (!document.hidden && isPlaying) {
+        // If the tab becomes visible again and we should be playing, auto-resume
+        try {
+          if (playerRef.current && typeof playerRef.current.playVideo === 'function') {
+            playerRef.current.playVideo();
+          }
+        } catch (e) {
+          console.error('Failed to auto-resume on visibility restore:', e);
+        }
       }
     };
 
@@ -563,25 +610,28 @@ export default function PersistentPlayer() {
       setDuration(player.getDuration());
       forcePlayCount.current = 0; // Reset count on successful play
 
-      // Sync active track back to Zustand if it changed natively
-      try {
-        const videoData = player.getVideoData();
-        const activeVideoId = videoData?.video_id;
-        const store = usePlayerStore.getState();
+      if (isMobileDevice) {
+        // Sync active track back to Zustand if it changed natively inside playlist
+        try {
+          const videoData = player.getVideoData();
+          const activeVideoId = videoData?.video_id;
+          const store = usePlayerStore.getState();
 
-        if (activeVideoId && store.currentTrack?.videoId !== activeVideoId) {
-          const foundIndex = store.queue.findIndex((t) => t.videoId === activeVideoId);
-          if (foundIndex !== -1) {
-            usePlayerStore.setState({
-              currentIndex: foundIndex,
-              currentTrack: store.queue[foundIndex],
-              progress: 0,
-              isPlaying: true
-            });
+          if (activeVideoId && store.currentTrack?.videoId !== activeVideoId) {
+            const foundIndex = store.queue.findIndex((t) => t.videoId === activeVideoId);
+            if (foundIndex !== -1) {
+              lastSyncIndexRef.current = foundIndex;
+              usePlayerStore.setState({
+                currentIndex: foundIndex,
+                currentTrack: store.queue[foundIndex],
+                progress: 0,
+                isPlaying: true
+              });
+            }
           }
+        } catch (e) {
+          console.error('Error syncing native track change:', e);
         }
-      } catch (e) {
-        console.error('Error syncing native track change:', e);
       }
     } else if (state === 2) {
       // If paused, check if user requested playing and tab is hidden (browser-induced pause)
@@ -611,10 +661,14 @@ export default function PersistentPlayer() {
         player.seekTo(0, true);
         player.playVideo();
       } else {
-        // If it's the last track in the queue, and we're not repeating, set playing to false
-        if (store.currentIndex === store.queue.length - 1 && store.repeat === 'none') {
-          setPlaying(false);
-          setProgress(0);
+        if (!isMobileDevice) {
+          nextTrack();
+        } else {
+          // Mobile: native playlist ended logic
+          if (store.currentIndex === store.queue.length - 1 && store.repeat === 'none') {
+            setPlaying(false);
+            setProgress(0);
+          }
         }
       }
     } else if (state === 5 || state === -1) {
@@ -640,7 +694,7 @@ export default function PersistentPlayer() {
   };
 
   const onEnd = () => {
-    // Handled in onStateChange state === 0 for native playlist transition.
+    // Handled in onStateChange state === 0.
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -688,12 +742,12 @@ export default function PersistentPlayer() {
           }`}
         style={showVideo ? videoStyle : {
           position: 'fixed',
-          bottom: '1px',
-          left: '1px',
-          width: '1px',
-          height: '1px',
-          opacity: 1,
-          zIndex: 10,
+          bottom: '0px',
+          left: '0px',
+          width: '320px',
+          height: '180px',
+          opacity: 0.001,
+          zIndex: -10,
           pointerEvents: 'none',
         }}
       >
@@ -733,7 +787,7 @@ export default function PersistentPlayer() {
                   type="range"
                   min={0}
                   max={duration || 100}
-                  value={progress}
+                  value={progress || 0}
                   onChange={handleSeek}
                   className="flex-1 h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer focus:outline-none accent-primary"
                 />
@@ -770,6 +824,7 @@ export default function PersistentPlayer() {
         </div>
 
         <YouTube
+          videoId={undefined}
           opts={{
             height: '100%',
             width: '100%',
@@ -852,7 +907,7 @@ export default function PersistentPlayer() {
                     type="range"
                     min={0}
                     max={duration || 100}
-                    value={progress}
+                    value={progress || 0}
                     onChange={handleSeek}
                     className="w-full h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                   />
@@ -905,7 +960,7 @@ export default function PersistentPlayer() {
                     type="range"
                     min={0}
                     max={100}
-                    value={muted ? 0 : volume}
+                    value={muted ? 0 : (volume || 0)}
                     onChange={handleVolumeChange}
                     dir="ltr"
                     className="w-full h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
@@ -969,7 +1024,7 @@ export default function PersistentPlayer() {
                       type="range"
                       min={0}
                       max={duration || 100}
-                      value={progress}
+                      value={progress || 0}
                       onChange={handleSeek}
                       className="w-full h-1.5 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                     />
@@ -1026,7 +1081,7 @@ export default function PersistentPlayer() {
                       type="range"
                       min={0}
                       max={100}
-                      value={muted ? 0 : volume}
+                      value={muted ? 0 : (volume || 0)}
                       onChange={handleVolumeChange}
                       dir="ltr"
                       className="w-full h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
@@ -1115,7 +1170,7 @@ export default function PersistentPlayer() {
                   type="range"
                   min={0}
                   max={duration || 100}
-                  value={progress}
+                  value={progress || 0}
                   onChange={handleSeek}
                   className="flex-1 h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"
                 />
@@ -1153,7 +1208,7 @@ export default function PersistentPlayer() {
                   type="range"
                   min={0}
                   max={100}
-                  value={muted ? 0 : volume}
+                  value={muted ? 0 : (volume || 0)}
                   onChange={handleVolumeChange}
                   dir="ltr"
                   className="w-20 h-1 bg-secondary rounded-lg appearance-none cursor-pointer focus:outline-none"

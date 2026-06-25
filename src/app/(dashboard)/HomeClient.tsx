@@ -124,11 +124,11 @@ export default function HomeClient({ recentTracks, recommendedTracks, userName }
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {recentTracks.map((track) => {
+            {recentTracks.map((track, idx) => {
               const isPlayingThis = currentTrack?.videoId === track.videoId;
               return (
                 <div
-                  key={track.videoId}
+                  key={`${track.videoId}-${idx}`}
                   onClick={() => {
                     usePlayerStore.getState().setRepeat('all');
                     playTrack(track, recommendedTracks);
@@ -169,11 +169,11 @@ export default function HomeClient({ recentTracks, recommendedTracks, userName }
 
         {recommendedTracks.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {recommendedTracks.map((track) => {
+            {recommendedTracks.map((track, idx) => {
               const isPlayingThis = currentTrack?.videoId === track.videoId;
               return (
                 <div 
-                  key={track.videoId}
+                  key={`${track.videoId}-${idx}`}
                   onClick={() => {
                     usePlayerStore.getState().setRepeat('all');
                     playTrack(track, recommendedTracks);
